@@ -1,0 +1,83 @@
+name: CI-CD CloudFormation AWS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'template.yaml'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atividade-final-cloudformation
+  cancel-in-progress: false
+
+jobs:
+  validar:
+    name: Verificacao sintatica do template
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do repositorio
+        uses: actions/checkout@v4
+      - name: Instalar validador CloudFormation
+        run: python -m pip install --disable-pip-version-check cfn-lint
+      - name: Validar o template com cfn-lint
+        run: cfn-lint template.yaml
+      - name: Salvar template como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: template-cloudformation-${{ github.run_number }}
+          path: template.yaml
+          retention-days: 7
+
+  implantar:
+    name: Deploy na AWS
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: validar
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      STACK_NAME: atividade-final-iac
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configurar autenticacao AWS por OIDC
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Confirmar identidade (sem expor credenciais)
+        run: aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output json
+      - name: Validar template na AWS
+        run: aws cloudformation validate-template --template-body file://template.yaml
+      - name: Implantar ou atualizar stack
+        run: |
+          aws cloudformation deploy \
+            --template-file template.yaml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --no-fail-on-empty-changeset \
+            --tags Projeto=AtividadeFinal GerenciadoPor=GitHubActions
+      - name: Verificar status e obter URL do ALB
+        id: outputs
+        run: |
+          STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query 'Stacks[0].StackStatus' --output text)
+          URL=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='SiteURL'].OutputValue | [0]" --output text)
+          echo "Status: $STATUS"
+          echo "URL do site: $URL"
+          echo "site_url=$URL" >> "$GITHUB_OUTPUT"
+          printf '## Deploy AWS CloudFormation\n\n- Stack: `%s`\n- Status: `%s`\n- Site: %s\n' "$STACK_NAME" "$STATUS" "$URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke test HTTP via ALB
+        run: |
+          curl --fail --show-error --silent --location \
+            --retry 12 --retry-delay 10 --retry-all-errors \
+            "${{ steps.outputs.outputs.site_url }}" | grep -q 'Aplicação EC2 funcionando!'
+          echo 'Pagina web acessivel pelo ALB.'

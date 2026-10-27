@@ -1,0 +1,31 @@
+name: Excluir infraestrutura AWS (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmacao:
+        description: 'Digite EXCLUIR para destruir a stack e evitar custos'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  excluir:
+    if: github.ref == 'refs/heads/main' && inputs.confirmacao == 'EXCLUIR'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Autenticar na AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Excluir stack
+        run: |
+          aws cloudformation delete-stack --stack-name atividade-final-iac
+          aws cloudformation wait stack-delete-complete --stack-name atividade-final-iac
+          echo 'Stack excluida com sucesso.' >> "$GITHUB_STEP_SUMMARY"
